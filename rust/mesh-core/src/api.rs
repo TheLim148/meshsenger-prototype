@@ -1,7 +1,9 @@
+use std::sync::{Arc, Mutex};
+
 use crate::core::{MeshAction, MeshCore};
 use crate::message::{ChatType, Message, NodeId, Payload};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct ApiChatMessage {
     pub message_id: String,
     pub chat_type: String,
@@ -11,7 +13,13 @@ pub struct ApiChatMessage {
     pub timestamp: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ApiBytesResult {
+    pub bytes: Vec<u8>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
 pub enum ApiAction {
     ShowMessage {
         message: ApiChatMessage,
@@ -26,16 +34,18 @@ pub enum ApiAction {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, uniffi::Object)]
 pub struct MeshCoreApi {
-    core: MeshCore,
+    core: Mutex<MeshCore>,
 }
 
+#[uniffi::export]
 impl MeshCoreApi {
-    pub fn new(node_id: String) -> Self {
-        Self {
-            core: MeshCore::new(NodeId(node_id)),
-        }
+    #[uniffi::constructor]
+    pub fn new(node_id: String) -> Arc<Self> {
+        Arc::new(Self {
+            core: Mutex::new(MeshCore::new(NodeId(node_id))),
+        })
     }
 
     pub fn create_private_text_bytes(
@@ -43,68 +53,82 @@ impl MeshCoreApi {
         to: String,
         text: String,
         timestamp: u64,
-    ) -> Result<Vec<u8>, String> {
-        self.core
-            .create_private_text_bytes(NodeId(to), text, timestamp)
-            .map_err(|error| error.to_string())
+    ) -> ApiBytesResult {
+        let core = self.core.lock().expect("mesh core mutex poisoned");
+
+        match core.create_private_text_bytes(NodeId(to), text, timestamp) {
+            Ok(bytes) => ApiBytesResult { bytes, error: None },
+            Err(error) => ApiBytesResult {
+                bytes: Vec::new(),
+                error: Some(error.to_string()),
+            },
+        }
     }
 
-    pub fn create_broadcast_text_bytes(
-        &self,
-        text: String,
-        timestamp: u64,
-    ) -> Result<Vec<u8>, String> {
-        self.core
-            .create_broadcast_text_bytes(text, timestamp)
-            .map_err(|error| error.to_string())
+    pub fn create_broadcast_text_bytes(&self, text: String, timestamp: u64) -> ApiBytesResult {
+        let core = self.core.lock().expect("mesh core mutex poisoned");
+
+        match core.create_broadcast_text_bytes(text, timestamp) {
+            Ok(bytes) => ApiBytesResult { bytes, error: None },
+            Err(error) => ApiBytesResult {
+                bytes: Vec::new(),
+                error: Some(error.to_string()),
+            },
+        }
     }
 
-    pub fn handle_incoming_bytes(
-        &mut self,
-        from_peer_id: String,
-        bytes: Vec<u8>,
-    ) -> Vec<ApiAction> {
-        self.core
-            .handle_incoming_bytes(&NodeId(from_peer_id), &bytes)
+    pub fn handle_incoming_bytes(&self, from_peer_id: String, bytes: Vec<u8>) -> Vec<ApiAction> {
+        let mut core = self.core.lock().expect("mesh core mutex poisoned");
+
+        core.handle_incoming_bytes(&NodeId(from_peer_id), &bytes)
             .into_iter()
             .map(api_action_from_mesh_action)
             .collect()
     }
 
-    pub fn mark_peer_connected(&mut self, peer_id: String) {
-        self.core.mark_peer_connected(NodeId(peer_id));
+    pub fn mark_peer_connected(&self, peer_id: String) {
+        let mut core = self.core.lock().expect("mesh core mutex poisoned");
+        core.mark_peer_connected(NodeId(peer_id));
     }
 
-    pub fn mark_peer_disconnected(&mut self, peer_id: String) {
-        self.core.mark_peer_disconnected(&NodeId(peer_id));
+    pub fn mark_peer_disconnected(&self, peer_id: String) {
+        let mut core = self.core.lock().expect("mesh core mutex poisoned");
+        core.mark_peer_disconnected(&NodeId(peer_id));
     }
 
-    pub fn take_pending_bytes_for_peer(&mut self, peer_id: String) -> Vec<Vec<u8>> {
-        self.core.take_pending_bytes_for_peer(&NodeId(peer_id))
+    pub fn take_pending_bytes_for_peer(&self, peer_id: String) -> Vec<Vec<u8>> {
+        let mut core = self.core.lock().expect("mesh core mutex poisoned");
+        core.take_pending_bytes_for_peer(&NodeId(peer_id))
     }
 
     pub fn connected_peers(&self) -> Vec<String> {
-        self.core
-            .connected_peers()
+        let core = self.core.lock().expect("mesh core mutex poisoned");
+
+        core.connected_peers()
             .into_iter()
             .map(|peer_id| peer_id.0)
             .collect()
     }
 
-    pub fn seen_messages_count(&self) -> usize {
-        self.core.seen_messages_count()
+    pub fn seen_messages_count(&self) -> u64 {
+        let core = self.core.lock().expect("mesh core mutex poisoned");
+        core.seen_messages_count() as u64
     }
 
-    pub fn connected_peers_count(&self) -> usize {
-        self.core.connected_peers_count()
+    pub fn connected_peers_count(&self) -> u64 {
+        let core = self.core.lock().expect("mesh core mutex poisoned");
+        core.connected_peers_count() as u64
     }
 
-    pub fn pending_messages_count(&self) -> usize {
-        self.core.pending_messages_count()
+    pub fn pending_messages_count(&self) -> u64 {
+        let core = self.core.lock().expect("mesh core mutex poisoned");
+        core.pending_messages_count() as u64
     }
 
-    pub fn pending_messages_count_for_peer(&self, peer_id: String) -> usize {
-        self.core.pending_messages_count_for_peer(&NodeId(peer_id))
+    pub fn pending_messages_count_for_peer(&self, peer_id: String) -> u64 {
+        let core = self.core.lock().expect("mesh core mutex poisoned");
+
+        core.pending_messages_count_for_peer(&NodeId(peer_id)) as u64
     }
 }
 
@@ -162,9 +186,12 @@ mod tests {
     fn creates_private_text_bytes_via_api() {
         let api = MeshCoreApi::new("node_a".to_string());
 
-        let bytes = api
-            .create_private_text_bytes("node_b".to_string(), "Привет".to_string(), 1710000000)
-            .unwrap();
+        let result =
+            api.create_private_text_bytes("node_b".to_string(), "Привет".to_string(), 1710000000);
+
+        assert_eq!(result.error, None);
+
+        let bytes = result.bytes;
 
         let message = decode_message(&bytes).unwrap();
 
@@ -183,9 +210,11 @@ mod tests {
     fn creates_broadcast_text_bytes_via_api() {
         let api = MeshCoreApi::new("node_a".to_string());
 
-        let bytes = api
-            .create_broadcast_text_bytes("Всем привет".to_string(), 1710000000)
-            .unwrap();
+        let result = api.create_broadcast_text_bytes("Всем привет".to_string(), 1710000000);
+
+        assert_eq!(result.error, None);
+
+        let bytes = result.bytes;
 
         let message = decode_message(&bytes).unwrap();
 
@@ -197,11 +226,17 @@ mod tests {
     #[test]
     fn handles_incoming_private_message_via_api() {
         let sender_api = MeshCoreApi::new("node_a".to_string());
-        let mut receiver_api = MeshCoreApi::new("node_b".to_string());
+        let receiver_api = MeshCoreApi::new("node_b".to_string());
 
-        let bytes = sender_api
-            .create_private_text_bytes("node_b".to_string(), "Привет".to_string(), 1710000000)
-            .unwrap();
+        let result = sender_api.create_private_text_bytes(
+            "node_b".to_string(),
+            "Привет".to_string(),
+            1710000000,
+        );
+
+        assert_eq!(result.error, None);
+
+        let bytes = result.bytes;
 
         let actions = receiver_api.handle_incoming_bytes("node_a".to_string(), bytes);
 
@@ -221,7 +256,7 @@ mod tests {
 
     #[test]
     fn returns_error_for_invalid_bytes_via_api() {
-        let mut api = MeshCoreApi::new("node_b".to_string());
+        let api = MeshCoreApi::new("node_b".to_string());
 
         let actions = api.handle_incoming_bytes("node_a".to_string(), b"invalid bytes".to_vec());
 
@@ -234,7 +269,7 @@ mod tests {
 
     #[test]
     fn forwards_private_message_to_connected_peer_via_api() {
-        let mut api = MeshCoreApi::new("node_b".to_string());
+        let api = MeshCoreApi::new("node_b".to_string());
 
         api.mark_peer_connected("node_c".to_string());
 
@@ -264,7 +299,7 @@ mod tests {
 
     #[test]
     fn stores_pending_message_via_api() {
-        let mut api = MeshCoreApi::new("node_b".to_string());
+        let api = MeshCoreApi::new("node_b".to_string());
 
         let message = Message::private_text(
             NodeId("node_a".to_string()),
@@ -283,7 +318,7 @@ mod tests {
 
     #[test]
     fn takes_pending_bytes_for_peer_via_api() {
-        let mut api = MeshCoreApi::new("node_b".to_string());
+        let api = MeshCoreApi::new("node_b".to_string());
 
         let message = Message::private_text(
             NodeId("node_a".to_string()),
@@ -310,7 +345,7 @@ mod tests {
 
     #[test]
     fn tracks_connected_peers_via_api() {
-        let mut api = MeshCoreApi::new("node_a".to_string());
+        let api = MeshCoreApi::new("node_a".to_string());
 
         api.mark_peer_connected("node_b".to_string());
         api.mark_peer_connected("node_c".to_string());
@@ -324,7 +359,7 @@ mod tests {
 
     #[test]
     fn disconnects_peer_via_api() {
-        let mut api = MeshCoreApi::new("node_a".to_string());
+        let api = MeshCoreApi::new("node_a".to_string());
 
         api.mark_peer_connected("node_b".to_string());
         assert_eq!(api.connected_peers_count(), 1);

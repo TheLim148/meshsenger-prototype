@@ -112,21 +112,18 @@ impl MeshCore {
     }
 
     fn should_store_message(&self, message: &Message) -> bool {
-    if message.chat_type != ChatType::Private {
-        return false;
-    }
-
-    if message.from == self.node_id {
-        return false;
-    }
-
-    match &message.to {
-        Some(target) => {
-            target != &self.node_id && !self.connected_peers.contains(target)
+        if message.chat_type != ChatType::Private {
+            return false;
         }
-        None => false,
-    }
 
+        if message.from == self.node_id {
+            return false;
+        }
+
+        match &message.to {
+            Some(target) => target != &self.node_id && !self.connected_peers.contains(target),
+            None => false,
+        }
     }
 
     pub fn handle_incoming_bytes(&mut self, from_peer: &NodeId, bytes: &[u8]) -> Vec<MeshAction> {
