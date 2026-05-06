@@ -161,6 +161,26 @@ impl MeshCore {
                 .collect(),
         }
     }
+
+    pub fn seen_messages_count(&self) -> usize {
+        self.seen_messages.len()
+    }
+
+    pub fn connected_peers_count(&self) -> usize {
+        self.connected_peers.len()
+    }
+
+    pub fn pending_messages_count(&self) -> usize {
+        self.pending_store.pending_messages_count()
+    }
+
+    pub fn pending_messages_count_for_peer(&self, peer_id: &NodeId) -> usize {
+        self.pending_store.pending_messages_count_for_peer(peer_id)
+    }
+
+    pub fn has_seen_message(&self, message_id: &MessageId) -> bool {
+        self.seen_messages.contains(message_id)
+    }
 }
 
 #[cfg(test)]
@@ -521,5 +541,112 @@ mod tests {
 
         assert!(!target_peer_ids.contains(&peer_a));
         assert!(target_peer_ids.contains(&peer_c));
+    }
+
+    #[test]
+    fn counts_seen_messages_after_handling_message() {
+        let mut core = MeshCore::new(NodeId("node_b".to_string()));
+
+        let from_peer = NodeId("node_a".to_string());
+
+        let message = Message::private_text(
+            NodeId("node_a".to_string()),
+            NodeId("node_b".to_string()),
+            "Привет".to_string(),
+            1710000000,
+        );
+
+        assert_eq!(core.seen_messages_count(), 0);
+
+        core.handle_incoming_message(&from_peer, message);
+
+        assert_eq!(core.seen_messages_count(), 1);
+    }
+
+    #[test]
+    fn checks_that_message_was_seen() {
+        let mut core = MeshCore::new(NodeId("node_b".to_string()));
+
+        let from_peer = NodeId("node_a".to_string());
+
+        let message = Message::private_text(
+            NodeId("node_a".to_string()),
+            NodeId("node_b".to_string()),
+            "Привет".to_string(),
+            1710000000,
+        );
+
+        let message_id = message.message_id.clone();
+
+        assert!(!core.has_seen_message(&message_id));
+
+        core.handle_incoming_message(&from_peer, message);
+
+        assert!(core.has_seen_message(&message_id));
+    }
+
+    #[test]
+    fn counts_connected_peers() {
+        let mut core = MeshCore::new(NodeId("node_a".to_string()));
+
+        core.mark_peer_connected(NodeId("node_b".to_string()));
+        core.mark_peer_connected(NodeId("node_c".to_string()));
+
+        assert_eq!(core.connected_peers_count(), 2);
+    }
+
+    #[test]
+    fn decreases_connected_peers_count_after_disconnect() {
+        let mut core = MeshCore::new(NodeId("node_a".to_string()));
+
+        let peer_b = NodeId("node_b".to_string());
+
+        core.mark_peer_connected(peer_b.clone());
+
+        assert_eq!(core.connected_peers_count(), 1);
+
+        core.mark_peer_disconnected(&peer_b);
+
+        assert_eq!(core.connected_peers_count(), 0);
+    }
+
+    #[test]
+    fn counts_pending_messages_in_core() {
+        let mut core = MeshCore::new(NodeId("node_b".to_string()));
+
+        let from_peer = NodeId("node_a".to_string());
+        let target = NodeId("node_c".to_string());
+
+        let message = Message::private_text(
+            NodeId("node_a".to_string()),
+            target,
+            "Привет".to_string(),
+            1710000000,
+        );
+
+        assert_eq!(core.pending_messages_count(), 0);
+
+        core.handle_incoming_message(&from_peer, message);
+
+        assert_eq!(core.pending_messages_count(), 1);
+    }
+
+    #[test]
+    fn counts_pending_messages_for_specific_peer_in_core() {
+        let mut core = MeshCore::new(NodeId("node_b".to_string()));
+
+        let from_peer = NodeId("node_a".to_string());
+        let target = NodeId("node_c".to_string());
+
+        let message = Message::private_text(
+            NodeId("node_a".to_string()),
+            target.clone(),
+            "Привет".to_string(),
+            1710000000,
+        );
+
+        core.handle_incoming_message(&from_peer, message);
+
+        assert_eq!(core.pending_messages_count_for_peer(&target), 1);
     }
 }

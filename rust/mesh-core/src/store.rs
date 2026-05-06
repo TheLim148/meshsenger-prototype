@@ -30,6 +30,14 @@ impl PendingStore {
         })
     }
 
+    pub fn pending_messages_count(&self) -> usize {
+        self.messages.values().map(Vec::len).sum()
+    }
+
+    pub fn pending_messages_count_for_peer(&self, peer_id: &NodeId) -> usize {
+        self.messages.get(peer_id).map_or(0, Vec::len)
+    }
+
     pub fn is_empty(&self) -> bool {
         self.messages.is_empty()
     }
@@ -85,5 +93,70 @@ mod tests {
         let messages = store.take_for_peer(&NodeId("unknown".to_string()));
 
         assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn counts_all_pending_messages() {
+        let mut store = PendingStore::new();
+
+        let node_a = NodeId("node_a".to_string());
+        let node_b = NodeId("node_b".to_string());
+        let node_c = NodeId("node_c".to_string());
+
+        let first_message = Message::private_text(
+            node_a.clone(),
+            node_b.clone(),
+            "Первое".to_string(),
+            1710000000,
+        );
+
+        let second_message = Message::private_text(
+            node_a.clone(),
+            node_b.clone(),
+            "Второе".to_string(),
+            1710000001,
+        );
+
+        let third_message =
+            Message::private_text(node_a, node_c.clone(), "Третье".to_string(), 1710000002);
+
+        store.add(node_b.clone(), first_message);
+        store.add(node_b, second_message);
+        store.add(node_c, third_message);
+
+        assert_eq!(store.pending_messages_count(), 3);
+    }
+
+    #[test]
+    fn counts_pending_messages_for_specific_peer() {
+        let mut store = PendingStore::new();
+
+        let node_a = NodeId("node_a".to_string());
+        let node_b = NodeId("node_b".to_string());
+        let node_c = NodeId("node_c".to_string());
+
+        let first_message = Message::private_text(
+            node_a.clone(),
+            node_b.clone(),
+            "Первое".to_string(),
+            1710000000,
+        );
+
+        let second_message =
+            Message::private_text(node_a, node_c.clone(), "Второе".to_string(), 1710000001);
+
+        store.add(node_b.clone(), first_message);
+        store.add(node_c, second_message);
+
+        assert_eq!(store.pending_messages_count_for_peer(&node_b), 1);
+    }
+
+    #[test]
+    fn returns_zero_pending_messages_for_unknown_peer() {
+        let store = PendingStore::new();
+
+        let unknown_peer = NodeId("unknown".to_string());
+
+        assert_eq!(store.pending_messages_count_for_peer(&unknown_peer), 0);
     }
 }
