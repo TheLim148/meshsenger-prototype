@@ -95,6 +95,27 @@ impl MeshCore {
             Err(error) => vec![MeshAction::Error(error.to_string())],
         }
     }
+
+    pub fn create_private_text_bytes(
+        &self,
+        to: NodeId,
+        text: String,
+        timestamp: u64,
+    ) -> Result<Vec<u8>, CodecError> {
+        let message = Message::private_text(self.node_id.clone(), to, text, timestamp);
+
+        encode_message(&message)
+    }
+
+    pub fn create_broadcast_text_bytes(
+        &self,
+        text: String,
+        timestamp: u64,
+    ) -> Result<Vec<u8>, CodecError> {
+        let message = Message::broadcast_text(self.node_id.clone(), text, timestamp);
+
+        encode_message(&message)
+    }
 }
 
 #[cfg(test)]
@@ -278,5 +299,39 @@ mod tests {
         let pending_bytes = core.take_pending_bytes_for_peer(&NodeId("node_b".to_string()));
 
         assert!(pending_bytes.is_empty());
+    }
+
+    #[test]
+    fn creates_private_text_bytes_from_current_node() {
+        let core = MeshCore::new(NodeId("node_a".to_string()));
+
+        let bytes = core
+            .create_private_text_bytes(
+                NodeId("node_b".to_string()),
+                "Привет".to_string(),
+                1710000000,
+            )
+            .unwrap();
+
+        let message = decode_message(&bytes).unwrap();
+
+        assert_eq!(message.from, NodeId("node_a".to_string()));
+        assert_eq!(message.to, Some(NodeId("node_b".to_string())));
+        assert_eq!(message.chat_type, ChatType::Private);
+    }
+
+    #[test]
+    fn creates_broadcast_text_bytes_from_current_node() {
+        let core = MeshCore::new(NodeId("node_a".to_string()));
+
+        let bytes = core
+            .create_broadcast_text_bytes("Всем привет".to_string(), 1710000000)
+            .unwrap();
+
+        let message = decode_message(&bytes).unwrap();
+
+        assert_eq!(message.from, NodeId("node_a".to_string()));
+        assert_eq!(message.to, None);
+        assert_eq!(message.chat_type, ChatType::Broadcast);
     }
 }
