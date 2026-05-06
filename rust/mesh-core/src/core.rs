@@ -20,6 +20,7 @@ pub struct MeshCore {
     node_id: NodeId,
     seen_messages: HashSet<MessageId>,
     pending_store: PendingStore,
+    connected_peers: HashSet<NodeId>,
 }
 
 impl MeshCore {
@@ -28,7 +29,20 @@ impl MeshCore {
             node_id,
             seen_messages: HashSet::new(),
             pending_store: PendingStore::new(),
+            connected_peers: HashSet::new(),
         }
+    }
+
+    pub fn mark_peer_connected(&mut self, peer_id: NodeId) {
+        self.connected_peers.insert(peer_id);
+    }
+
+    pub fn mark_peer_disconnected(&mut self, peer_id: &NodeId) {
+        self.connected_peers.remove(peer_id);
+    }
+
+    pub fn connected_peers(&self) -> Vec<NodeId> {
+        self.connected_peers.iter().cloned().collect()
     }
 
     pub fn take_pending_bytes_for_peer(&mut self, peer_id: &NodeId) -> Vec<Vec<u8>> {
@@ -39,7 +53,11 @@ impl MeshCore {
             .collect()
     }
 
-    pub fn handle_incoming_message(&mut self, message: Message) -> Vec<MeshAction> {
+    pub fn handle_incoming_message(
+        &mut self,
+        from_peer: &NodeId,
+        message: Message,
+    ) -> Vec<MeshAction> {
         if self.seen_messages.contains(&message.message_id) {
             return vec![MeshAction::DropMessage];
         }
@@ -62,12 +80,16 @@ impl MeshCore {
             let mut forwarded_message = message;
             forwarded_message.ttl -= 1;
 
-            match encode_message(&forwarded_message) {
-                Ok(bytes) => actions.push(MeshAction::ForwardMessage {
-                    target_peer_ids: self.forward_targets(&forwarded_message),
-                    bytes,
-                }),
-                Err(error) => actions.push(MeshAction::Error(error.to_string())),
+            let target_peer_ids = self.forward_targets(from_peer, &forwarded_message);
+
+            if !target_peer_ids.is_empty() {
+                match encode_message(&forwarded_message) {
+                    Ok(bytes) => actions.push(MeshAction::ForwardMessage {
+                        target_peer_ids,
+                        bytes,
+                    }),
+                    Err(error) => actions.push(MeshAction::Error(error.to_string())),
+                }
             }
         }
 
@@ -95,9 +117,9 @@ impl MeshCore {
             && message.from != self.node_id
     }
 
-    pub fn handle_incoming_bytes(&mut self, bytes: &[u8]) -> Vec<MeshAction> {
+    pub fn handle_incoming_bytes(&mut self, from_peer: &NodeId, bytes: &[u8]) -> Vec<MeshAction> {
         match decode_message(bytes) {
-            Ok(message) => self.handle_incoming_message(message),
+            Ok(message) => self.handle_incoming_message(from_peer, message),
             Err(error) => vec![MeshAction::Error(error.to_string())],
         }
     }
@@ -123,10 +145,20 @@ impl MeshCore {
         encode_message(&message)
     }
 
-    fn forward_targets(&self, message: &Message) -> Vec<NodeId> {
+    fn forward_targets(&self, from_peer: &NodeId, message: &Message) -> Vec<NodeId> {
         match message.chat_type {
-            ChatType::Private => message.to.clone().into_iter().collect(),
-            ChatType::Broadcast => Vec::new(),
+            ChatType::Private => message
+                .to
+                .clone()
+                .filter(|target| self.connected_peers.contains(target) && target != from_peer)
+                .into_iter()
+                .collect(),
+
+            ChatType::Broadcast => self
+                .connected_peers()
+                .into_iter()
+                .filter(|peer| peer != from_peer)
+                .collect(),
         }
     }
 }
@@ -147,7 +179,7 @@ mod tests {
             1710000000,
         );
 
-        let actions = core.handle_incoming_message(message);
+        let actions = core.handle_incoming_message(&NodeId("node_a".to_string()), message);
 
         assert!(matches!(actions[0], MeshAction::ShowMessage(_)));
     }
@@ -163,7 +195,7 @@ mod tests {
             1710000000,
         );
 
-        let actions = core.handle_incoming_message(message);
+        let actions = core.handle_incoming_message(&NodeId("node_a".to_string()), message);
 
         assert!(
             !actions
@@ -176,14 +208,17 @@ mod tests {
     fn forwards_message_when_ttl_is_greater_than_zero() {
         let mut core = MeshCore::new(NodeId("node_b".to_string()));
 
+        let target = NodeId("node_c".to_string());
+        core.mark_peer_connected(target.clone());
+
         let message = Message::private_text(
             NodeId("node_a".to_string()),
-            NodeId("node_c".to_string()),
+            target,
             "Привет".to_string(),
             1710000000,
         );
 
-        let actions = core.handle_incoming_message(message);
+        let actions = core.handle_incoming_message(&NodeId("node_a".to_string()), message);
 
         assert!(
             actions
@@ -196,16 +231,19 @@ mod tests {
     fn decreases_ttl_when_forwarding() {
         let mut core = MeshCore::new(NodeId("node_b".to_string()));
 
+        let target = NodeId("node_c".to_string());
+        core.mark_peer_connected(target.clone());
+
         let mut message = Message::private_text(
             NodeId("node_a".to_string()),
-            NodeId("node_c".to_string()),
+            target,
             "Привет".to_string(),
             1710000000,
         );
 
         message.ttl = 5;
 
-        let actions = core.handle_incoming_message(message);
+        let actions = core.handle_incoming_message(&NodeId("node_a".to_string()), message);
 
         let forwarded_bytes = actions
             .iter()
@@ -231,8 +269,8 @@ mod tests {
             1710000000,
         );
 
-        let _ = core.handle_incoming_message(message.clone());
-        let actions = core.handle_incoming_message(message);
+        let _ = core.handle_incoming_message(&NodeId("node_a".to_string()), message.clone());
+        let actions = core.handle_incoming_message(&NodeId("node_a".to_string()), message);
 
         assert_eq!(actions, vec![MeshAction::DropMessage]);
     }
@@ -249,7 +287,7 @@ mod tests {
         );
 
         let bytes = encode_message(&message).unwrap();
-        let actions = core.handle_incoming_bytes(&bytes);
+        let actions = core.handle_incoming_bytes(&NodeId("node_a".to_string()), &bytes);
 
         assert!(
             actions
@@ -262,7 +300,7 @@ mod tests {
     fn returns_error_for_invalid_incoming_bytes() {
         let mut core = MeshCore::new(NodeId("node_b".to_string()));
 
-        let actions = core.handle_incoming_bytes(b"invalid bytes");
+        let actions = core.handle_incoming_bytes(&NodeId("node_a".to_string()), b"invalid bytes");
 
         assert!(
             actions
@@ -285,7 +323,7 @@ mod tests {
 
         let message_id = message.message_id.clone();
 
-        core.handle_incoming_message(message);
+        core.handle_incoming_message(&NodeId("node_a".to_string()), message);
 
         let pending_bytes = core.take_pending_bytes_for_peer(&target);
 
@@ -307,7 +345,7 @@ mod tests {
             1710000000,
         );
 
-        core.handle_incoming_message(message);
+        core.handle_incoming_message(&NodeId("node_a".to_string()), message);
 
         let pending_bytes = core.take_pending_bytes_for_peer(&NodeId("node_b".to_string()));
 
@@ -361,7 +399,9 @@ mod tests {
             1710000000,
         );
 
-        let actions = core.handle_incoming_message(message);
+        core.mark_peer_connected(target.clone());
+
+        let actions = core.handle_incoming_message(&NodeId("node_a".to_string()), message);
 
         let target_peer_ids = actions
             .iter()
@@ -374,5 +414,112 @@ mod tests {
             .unwrap();
 
         assert_eq!(target_peer_ids, &vec![target]);
+    }
+
+    #[test]
+    fn marks_peer_as_connected() {
+        let mut core = MeshCore::new(NodeId("node_a".to_string()));
+
+        let peer = NodeId("node_b".to_string());
+
+        core.mark_peer_connected(peer.clone());
+
+        assert!(core.connected_peers().contains(&peer));
+    }
+
+    #[test]
+    fn marks_peer_as_disconnected() {
+        let mut core = MeshCore::new(NodeId("node_a".to_string()));
+
+        let peer = NodeId("node_b".to_string());
+
+        core.mark_peer_connected(peer.clone());
+        core.mark_peer_disconnected(&peer);
+
+        assert!(!core.connected_peers().contains(&peer));
+    }
+
+    #[test]
+    fn does_not_forward_private_message_to_disconnected_target() {
+        let mut core = MeshCore::new(NodeId("node_b".to_string()));
+
+        let message = Message::private_text(
+            NodeId("node_a".to_string()),
+            NodeId("node_c".to_string()),
+            "Привет".to_string(),
+            1710000000,
+        );
+
+        let actions = core.handle_incoming_message(&NodeId("node_a".to_string()), message);
+
+        assert!(
+            !actions
+                .iter()
+                .any(|action| matches!(action, MeshAction::ForwardMessage { .. }))
+        );
+    }
+
+    #[test]
+    fn forwards_broadcast_message_to_connected_peers() {
+        let mut core = MeshCore::new(NodeId("node_b".to_string()));
+
+        let peer_c = NodeId("node_c".to_string());
+        let peer_d = NodeId("node_d".to_string());
+
+        core.mark_peer_connected(peer_c.clone());
+        core.mark_peer_connected(peer_d.clone());
+
+        let message = Message::broadcast_text(
+            NodeId("node_a".to_string()),
+            "Всем привет".to_string(),
+            1710000000,
+        );
+
+        let actions = core.handle_incoming_message(&NodeId("node_a".to_string()), message);
+
+        let target_peer_ids = actions
+            .iter()
+            .find_map(|action| match action {
+                MeshAction::ForwardMessage {
+                    target_peer_ids, ..
+                } => Some(target_peer_ids),
+                _ => None,
+            })
+            .unwrap();
+
+        assert!(target_peer_ids.contains(&peer_c));
+        assert!(target_peer_ids.contains(&peer_d));
+    }
+
+    #[test]
+    fn does_not_forward_message_back_to_sender_peer() {
+        let mut core = MeshCore::new(NodeId("node_b".to_string()));
+
+        let peer_a = NodeId("peer_a".to_string());
+        let peer_c = NodeId("peer_c".to_string());
+
+        core.mark_peer_connected(peer_a.clone());
+        core.mark_peer_connected(peer_c.clone());
+
+        let message = Message::broadcast_text(
+            NodeId("node_a".to_string()),
+            "Всем привет".to_string(),
+            1710000000,
+        );
+
+        let actions = core.handle_incoming_message(&peer_a, message);
+
+        let target_peer_ids = actions
+            .iter()
+            .find_map(|action| match action {
+                MeshAction::ForwardMessage {
+                    target_peer_ids, ..
+                } => Some(target_peer_ids),
+                _ => None,
+            })
+            .unwrap();
+
+        assert!(!target_peer_ids.contains(&peer_a));
+        assert!(target_peer_ids.contains(&peer_c));
     }
 }
