@@ -7,7 +7,10 @@ use crate::store::PendingStore;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MeshAction {
     ShowMessage(Message),
-    ForwardMessage(Vec<u8>),
+    ForwardMessage {
+        target_peer_ids: Vec<NodeId>,
+        bytes: Vec<u8>,
+    },
     DropMessage,
     Error(String),
 }
@@ -60,7 +63,10 @@ impl MeshCore {
             forwarded_message.ttl -= 1;
 
             match encode_message(&forwarded_message) {
-                Ok(bytes) => actions.push(MeshAction::ForwardMessage(bytes)),
+                Ok(bytes) => actions.push(MeshAction::ForwardMessage {
+                    target_peer_ids: self.forward_targets(&forwarded_message),
+                    bytes,
+                }),
                 Err(error) => actions.push(MeshAction::Error(error.to_string())),
             }
         }
@@ -115,6 +121,13 @@ impl MeshCore {
         let message = Message::broadcast_text(self.node_id.clone(), text, timestamp);
 
         encode_message(&message)
+    }
+
+    fn forward_targets(&self, message: &Message) -> Vec<NodeId> {
+        match message.chat_type {
+            ChatType::Private => message.to.clone().into_iter().collect(),
+            ChatType::Broadcast => Vec::new(),
+        }
     }
 }
 
@@ -175,7 +188,7 @@ mod tests {
         assert!(
             actions
                 .iter()
-                .any(|action| matches!(action, MeshAction::ForwardMessage(_)))
+                .any(|action| matches!(action, MeshAction::ForwardMessage { .. }))
         );
     }
 
@@ -197,7 +210,7 @@ mod tests {
         let forwarded_bytes = actions
             .iter()
             .find_map(|action| match action {
-                MeshAction::ForwardMessage(bytes) => Some(bytes),
+                MeshAction::ForwardMessage { bytes, .. } => Some(bytes),
                 _ => None,
             })
             .unwrap();
@@ -333,5 +346,33 @@ mod tests {
         assert_eq!(message.from, NodeId("node_a".to_string()));
         assert_eq!(message.to, None);
         assert_eq!(message.chat_type, ChatType::Broadcast);
+    }
+
+    #[test]
+    fn forwards_private_message_to_target_peer() {
+        let mut core = MeshCore::new(NodeId("node_b".to_string()));
+
+        let target = NodeId("node_c".to_string());
+
+        let message = Message::private_text(
+            NodeId("node_a".to_string()),
+            target.clone(),
+            "Привет".to_string(),
+            1710000000,
+        );
+
+        let actions = core.handle_incoming_message(message);
+
+        let target_peer_ids = actions
+            .iter()
+            .find_map(|action| match action {
+                MeshAction::ForwardMessage {
+                    target_peer_ids, ..
+                } => Some(target_peer_ids),
+                _ => None,
+            })
+            .unwrap();
+
+        assert_eq!(target_peer_ids, &vec![target]);
     }
 }
