@@ -7,13 +7,24 @@ pub enum CodecError {
 }
 
 pub fn encode_message(message: &Message) -> Result<Vec<u8>, CodecError> {
-    serde_json::to_vec(message)
-        .map_err(|error| CodecError::EncodeFailed(error.to_string()))
+    serde_json::to_vec(message).map_err(|error| CodecError::EncodeFailed(error.to_string()))
 }
 
 pub fn decode_message(bytes: &[u8]) -> Result<Message, CodecError> {
-    serde_json::from_slice(bytes)
-        .map_err(|error| CodecError::DecodeFailed(error.to_string()))
+    serde_json::from_slice(bytes).map_err(|error| CodecError::DecodeFailed(error.to_string()))
+}
+
+impl std::fmt::Display for CodecError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CodecError::EncodeFailed(message) => {
+                write!(formatter, "failed to encode message: {}", message)
+            }
+            CodecError::DecodeFailed(message) => {
+                write!(formatter, "failed to decode message: {}", message)
+            }
+        }
+    }
 }
 
 #[cfg(test)]

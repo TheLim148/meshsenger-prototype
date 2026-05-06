@@ -1,12 +1,14 @@
 use std::collections::HashSet;
 
+use crate::codec::{CodecError, decode_message, encode_message};
 use crate::message::{ChatType, Message, MessageId, NodeId};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MeshAction {
     ShowMessage(Message),
-    ForwardMessage(Message),
+    ForwardMessage(Vec<u8>),
     DropMessage,
+    Error(String),
 }
 
 #[derive(Debug)]
@@ -40,7 +42,10 @@ impl MeshCore {
             let mut forwarded_message = message;
             forwarded_message.ttl -= 1;
 
-            actions.push(MeshAction::ForwardMessage(forwarded_message));
+            match encode_message(&forwarded_message) {
+                Ok(bytes) => actions.push(MeshAction::ForwardMessage(bytes)),
+                Err(error) => actions.push(MeshAction::Error(error.to_string())),
+            }
         }
 
         if actions.is_empty() {
@@ -59,6 +64,13 @@ impl MeshCore {
 
     fn should_forward_message(&self, message: &Message) -> bool {
         message.ttl > 0 && message.from != self.node_id
+    }
+
+    pub fn handle_incoming_bytes(&mut self, bytes: &[u8]) -> Vec<MeshAction> {
+        match decode_message(bytes) {
+            Ok(message) => self.handle_incoming_message(message),
+            Err(error) => vec![MeshAction::Error(error.to_string())],
+        }
     }
 }
 
@@ -96,9 +108,11 @@ mod tests {
 
         let actions = core.handle_incoming_message(message);
 
-        assert!(!actions
-            .iter()
-            .any(|action| matches!(action, MeshAction::ShowMessage(_))));
+        assert!(
+            !actions
+                .iter()
+                .any(|action| matches!(action, MeshAction::ShowMessage(_)))
+        );
     }
 
     #[test]
@@ -114,9 +128,11 @@ mod tests {
 
         let actions = core.handle_incoming_message(message);
 
-        assert!(actions
-            .iter()
-            .any(|action| matches!(action, MeshAction::ForwardMessage(_))));
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, MeshAction::ForwardMessage(_)))
+        );
     }
 
     #[test]
@@ -134,13 +150,15 @@ mod tests {
 
         let actions = core.handle_incoming_message(message);
 
-        let forwarded_message = actions
+        let forwarded_bytes = actions
             .iter()
             .find_map(|action| match action {
-                MeshAction::ForwardMessage(message) => Some(message),
+                MeshAction::ForwardMessage(bytes) => Some(bytes),
                 _ => None,
             })
             .unwrap();
+
+        let forwarded_message = decode_message(forwarded_bytes).unwrap();
 
         assert_eq!(forwarded_message.ttl, 4);
     }
@@ -160,5 +178,39 @@ mod tests {
         let actions = core.handle_incoming_message(message);
 
         assert_eq!(actions, vec![MeshAction::DropMessage]);
+    }
+
+    #[test]
+    fn handles_incoming_bytes() {
+        let mut core = MeshCore::new(NodeId("node_b".to_string()));
+
+        let message = Message::private_text(
+            NodeId("node_a".to_string()),
+            NodeId("node_b".to_string()),
+            "Привет".to_string(),
+            1710000000,
+        );
+
+        let bytes = encode_message(&message).unwrap();
+        let actions = core.handle_incoming_bytes(&bytes);
+
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, MeshAction::ShowMessage(_)))
+        );
+    }
+
+    #[test]
+    fn returns_error_for_invalid_incoming_bytes() {
+        let mut core = MeshCore::new(NodeId("node_b".to_string()));
+
+        let actions = core.handle_incoming_bytes(b"invalid bytes");
+
+        assert!(
+            actions
+                .iter()
+                .any(|action| matches!(action, MeshAction::Error(_)))
+        );
     }
 }

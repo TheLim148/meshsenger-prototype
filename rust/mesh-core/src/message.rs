@@ -69,7 +69,6 @@ impl Message {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -79,12 +78,8 @@ mod tests {
         let from = NodeId("node_a".to_string());
         let to = NodeId("node_b".to_string());
 
-        let message = Message::private_text(
-            from.clone(),
-            to.clone(),
-            "Привет".to_string(),
-            1710000000,
-        );
+        let message =
+            Message::private_text(from.clone(), to.clone(), "Привет".to_string(), 1710000000);
 
         assert_eq!(message.protocol_version, "0.1.0");
         assert_eq!(message.message_type, MessageType::Text);
@@ -105,11 +100,7 @@ mod tests {
     fn creates_broadcast_text_message() {
         let from = NodeId("node_a".to_string());
 
-        let message = Message::broadcast_text(
-            from.clone(),
-            "Всем привет".to_string(),
-            1710000000,
-        );
+        let message = Message::broadcast_text(from.clone(), "Всем привет".to_string(), 1710000000);
 
         assert_eq!(message.protocol_version, "0.1.0");
         assert_eq!(message.message_type, MessageType::Text);
