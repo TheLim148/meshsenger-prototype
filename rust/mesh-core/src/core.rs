@@ -2,6 +2,7 @@ use std::collections::HashSet;
 
 use crate::codec::{CodecError, decode_message, encode_message};
 use crate::message::{ChatType, Message, MessageId, NodeId};
+use crate::store::PendingStore;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MeshAction {
@@ -15,6 +16,7 @@ pub enum MeshAction {
 pub struct MeshCore {
     node_id: NodeId,
     seen_messages: HashSet<MessageId>,
+    pending_store: PendingStore,
 }
 
 impl MeshCore {
@@ -22,7 +24,16 @@ impl MeshCore {
         Self {
             node_id,
             seen_messages: HashSet::new(),
+            pending_store: PendingStore::new(),
         }
+    }
+
+    pub fn take_pending_bytes_for_peer(&mut self, peer_id: &NodeId) -> Vec<Vec<u8>> {
+        self.pending_store
+            .take_for_peer(peer_id)
+            .into_iter()
+            .filter_map(|message| encode_message(&message).ok())
+            .collect()
     }
 
     pub fn handle_incoming_message(&mut self, message: Message) -> Vec<MeshAction> {
@@ -36,6 +47,12 @@ impl MeshCore {
 
         if self.should_show_message(&message) {
             actions.push(MeshAction::ShowMessage(message.clone()));
+        }
+
+        if self.should_store_message(&message) {
+            if let Some(target) = message.to.clone() {
+                self.pending_store.add(target, message.clone());
+            }
         }
 
         if self.should_forward_message(&message) {
@@ -64,6 +81,12 @@ impl MeshCore {
 
     fn should_forward_message(&self, message: &Message) -> bool {
         message.ttl > 0 && message.from != self.node_id
+    }
+
+    fn should_store_message(&self, message: &Message) -> bool {
+        message.chat_type == ChatType::Private
+            && message.to.as_ref() != Some(&self.node_id)
+            && message.from != self.node_id
     }
 
     pub fn handle_incoming_bytes(&mut self, bytes: &[u8]) -> Vec<MeshAction> {
@@ -212,5 +235,48 @@ mod tests {
                 .iter()
                 .any(|action| matches!(action, MeshAction::Error(_)))
         );
+    }
+    #[test]
+    fn stores_private_message_for_unavailable_target() {
+        let mut core = MeshCore::new(NodeId("node_b".to_string()));
+
+        let target = NodeId("node_c".to_string());
+
+        let message = Message::private_text(
+            NodeId("node_a".to_string()),
+            target.clone(),
+            "Привет".to_string(),
+            1710000000,
+        );
+
+        let message_id = message.message_id.clone();
+
+        core.handle_incoming_message(message);
+
+        let pending_bytes = core.take_pending_bytes_for_peer(&target);
+
+        assert_eq!(pending_bytes.len(), 1);
+
+        let pending_message = decode_message(&pending_bytes[0]).unwrap();
+
+        assert_eq!(pending_message.message_id, message_id);
+    }
+
+    #[test]
+    fn does_not_store_message_for_current_node() {
+        let mut core = MeshCore::new(NodeId("node_b".to_string()));
+
+        let message = Message::private_text(
+            NodeId("node_a".to_string()),
+            NodeId("node_b".to_string()),
+            "Привет".to_string(),
+            1710000000,
+        );
+
+        core.handle_incoming_message(message);
+
+        let pending_bytes = core.take_pending_bytes_for_peer(&NodeId("node_b".to_string()));
+
+        assert!(pending_bytes.is_empty());
     }
 }

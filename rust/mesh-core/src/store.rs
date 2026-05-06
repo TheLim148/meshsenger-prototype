@@ -23,9 +23,11 @@ impl PendingStore {
     }
 
     pub fn contains_message_for_peer(&self, peer_id: &NodeId, message_id: &MessageId) -> bool {
-        self.messages
-            .get(peer_id)
-            .is_some_and(|messages| messages.iter().any(|message| &message.message_id == message_id))
+        self.messages.get(peer_id).is_some_and(|messages| {
+            messages
+                .iter()
+                .any(|message| &message.message_id == message_id)
+        })
     }
 
     pub fn is_empty(&self) -> bool {
